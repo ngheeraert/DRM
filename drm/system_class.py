@@ -336,38 +336,6 @@ class system(object):
 		vac_qb[0,0] = 1
 		vac = np.kron( vac_qb, self.ide_cav )  
 
-		pop_arr[:,0] = times
-		pop_arr_dressed[:,0] = times
-		for i in range( nsteps ):
-			partial_rho = partial_trace( rhos[i], [self.qubit_dim,self.cavity_dim], [0] )
-			entropy_arr[i] = self.renyi_entropy_2(rhos[i])
-			for j in range( self.qubit_dim ):
-				pop_arr[i,j+1] = np.real( partial_rho[j,j] )
-				pop_arr_dressed[i,j+1] = np.real( self.eig_vec[:,j].dot(rhos[i]).dot(self.eig_vec[:,j]) )
-
-		filename = 'data/PPLT_' + self.paramchar(times[-1]) + '.d'
-		np.savetxt( filename, pop_arr )
-		filename = 'data/DPPLT_' + self.paramchar(times[-1]) + '.d'
-		np.savetxt( filename, pop_arr_dressed )
-		filename = 'data/ENTROPY_' + self.paramchar(times[-1]) + '.d'
-		np.savetxt( filename, entropy_arr )
-		#plt.plot( pop_arr2[:,0], pop_arr2[:,1]*1.01 )
-		for j in lvl_plot:
-			plt.plot( pop_arr_dressed[:,0], pop_arr_dressed[:,j+1] )
-		plt.xlabel(r'$t$')
-		plt.ylabel('PPLT')
-		plt.savefig( "figures/PPLT_" + self.paramchar(times[-1])+ '.pdf', format='pdf'  )
-		plt.show()
-
-		n_arr[:,0] = times
-		for i in range( nsteps ):
-			n_arr[i,1] = np.real( np.trace( self.na.dot( rhos[i] ) ) )
-
-		filename = 'data/N_' + self.paramchar(times[-1]) + '.d'
-		np.savetxt( filename, n_arr )
-		#plt.plot( n_arr[:,0], n_arr[:,1] )
-		#plt.show()
-
 		re_lambda_list = np.linspace( -max_lambda, max_lambda, 70 )
 		im_lambda_list = np.linspace( -max_lambda, max_lambda, 70 )
 
