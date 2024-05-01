@@ -1,0 +1,14 @@
+Metadata-Version: 2.1
+Name: medrm
+Version: 0.1
+Summary: This program simulates the driven rabi model using master equation integration.
+Author: Nicolas Gheeraert
+Author-email: n.gheeraert@physics.iitm.ac.in
+
+DYNAMICS_ANALYSIS
+--------
+
+To import::
+
+    >>> import drm
+

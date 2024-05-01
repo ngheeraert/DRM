@@ -58,6 +58,18 @@ class system(object):
 		Pg_temp[0,0] = 1
 		Pe_temp[1,1] = 1
 
+		P_plus_temp = np.zeros( (qubit_dim,qubit_dim) )
+		P_minus_temp = np.zeros( (qubit_dim,qubit_dim) )
+		P_plus_temp[:,:]  = 1/2
+		P_minus_temp[:,:] = 1/2
+		P_minus_temp[0,1] = -1/2
+		P_minus_temp[1,0] = -1/2
+
+		sigmaz_temp = np.zeros( (qubit_dim,qubit_dim) )
+		sigmaz_temp[:,:]  = 0
+		sigmaz_temp[0,0] = 1
+		sigmaz_temp[1,1] = 1
+
 		self.na_red = (a_temp.T).dot( a_temp )
 
 		self.a = np.kron( self.ide_qb, a_temp )
@@ -66,33 +78,35 @@ class system(object):
 		self.b_dag = np.transpose( self.b )
 		self.na = self.a_dag.dot( self.a )
 		self.nb = self.b_dag.dot( self.b )
+		self.sigmaz = np.kron( sigmaz_temp, self.ide_cav  )
 		self.Pg = np.kron( Pg_temp, self.ide_cav  )
 		self.Pe = np.kron( Pe_temp, self.ide_cav  )
+		self.P_plus = np.kron( P_plus_temp, self.ide_cav  )
+		self.P_minus = np.kron( P_minus_temp, self.ide_cav  )
+
+		self.sigma_z = self.b_dag.dot( self.b )
 
 		self.Xa = ( self.a + self.a_dag )
 		self.Xb = ( self.b + self.b_dag )
 
 		if ( self.dvice == 'QUBIT' ):
 			self.w01 = w01
-			self.anh = -1 * 2*np.pi
+			self.anh = 0*-1 * 2*np.pi
 
 		else:
 
-			if ( self.dvice == 'TRSM1' ):
-				energy_filename = "qubit_params/FOR_Elvl_Ec0.192_Ej14.155.txt"
-				charge_op_filename = "qubit_params/FOR_charge_op_Ec0.192_Ej14.155.txt"
-			elif ( self.dvice == 'TRSM2' ):
-				energy_filename = "qubit_params/FOR_Elvl_Ec-0.221_w015.4.txt"
-				charge_op_filename = "qubit_params/FOR_charge_op_Ec-0.221_w015.4.txt"
+			if ( self.dvice == 'TRSM2' ):
+				energy_filename = "../MPOL_DCT_FOR/qubit_params/FOR_E_lvl_Ec0.190_Ej14.368.txt"
+				coupling_op_filename = "../MPOL_DCT_FOR/qubit_params/FOR_Charge_Mat_Ec0.190_Ej14.368.txt"
 			elif ( self.dvice == 'TRSM3' ):
-				energy_filename = "../MPOL_DCT_FOR/qubit_params/FOR_Elvl_BENCHMARK.txt"
-				charge_op_filename = "../MPOL_DCT_FOR/qubit_params/FOR_charge_op_BENCHMARK.txt"
-			elif ( self.dvice == 'QUTR1' ):
-				energy_filename = "qubit_params/Elvl_QTM_Ec0.192_Ej14.155.txt"
-				charge_op_filename = "qubit_params/charge_op_QTM_Ec0.192_Ej14.155.txt" 
+				energy_filename = "../MPOL_DCT_FOR/qubit_params/T_FOR_E_lvl_Ec0.280_Ej14.000.txt"
+				coupling_op_filename = "../MPOL_DCT_FOR/qubit_params/T_FOR_Charge_Mat_Ec0.280_Ej14.000.txt"
+			elif ( self.dvice == 'QUTR2' ):
+				energy_filename = "../MPOL_DCT_FOR/qubit_params/FOR_E_lvl_Ec0.190_Ej14.368.txt"
+				coupling_op_filename = "../MPOL_DCT_FOR/qubit_params/FOR_Cos_Phi_q_Mat_Ec0.190_Ej14.368.txt"
 
 			energy_levels = np.loadtxt( energy_filename )*2*np.pi
-			charge_op = np.loadtxt( charge_op_filename )
+			coupling_op = np.loadtxt( coupling_op_filename )
 
 			H_qb_IS = np.zeros( (qubit_dim,qubit_dim), dtype='float64' )
 			for i in range(qubit_dim):
@@ -115,19 +129,24 @@ class system(object):
 		#===========================
 		if ( coupling_type == '00' ):
 
-			self.H_qb = self.w01*self.nb + (self.anh/2)*( self.nb ).dot( self.ide - self.nb )
-			self.H_coupling = -g*( self.Xa ).dot( self.Xb )
+			#self.H_qb = self.w01*self.nb + (self.anh/2)*( self.nb ).dot( self.ide - self.nb )
+			self.H_qb = self.sigmaz*self.nb# + (self.anh/2)*( self.nb ).dot( self.ide - self.nb )
+			self.H_coupling = g*( self.Xa ).dot( self.Xb )
 
 		elif ( coupling_type == '11' ):
 
 			self.H_qb = np.kron( H_qb_IS, self.ide_cav )
-			g_qc = - self.g*charge_op[ :qubit_dim , :qubit_dim ]# / charge_op[ 0,1 ]
-			self.H_coupling = np.kron( g_qc, a_temp + np.transpose(a_temp)  )
+			#-- renormalisation was removed to match benchmarking with Angela
+			g_qc = self.g*coupling_op[ :qubit_dim , :qubit_dim ]# / coupling_op[ 0,1 ]
+			if ( self.dvice[0:4] == 'TRSM' ):
+				self.H_coupling = np.kron( g_qc, a_temp + np.transpose(a_temp)  )
+			elif ( self.dvice[0:4] == 'QUTR' ):
+				self.H_coupling = np.kron( g_qc, (a_temp + np.transpose(a_temp)).dot(a_temp + np.transpose(a_temp)) )
 
 		elif ( coupling_type == '01' ):
 
 			self.H_qb = self.w01*self.nb + (self.anh/2)*( self.nb ).dot( self.ide - self.nb )
-			g_qc = - self.g*charge_op[ :qubit_dim , :qubit_dim ] / charge_op[ 0,1 ]
+			g_qc = - self.g*coupling_op[ :qubit_dim , :qubit_dim ] / coupling_op[ 0,1 ]
 			self.H_coupling = np.kron( g_qc, a_temp + np.transpose(a_temp)  )
 
 		elif ( coupling_type == '10' ):
