@@ -1,3 +1,30 @@
+"""
+system_class.py
+===============
+
+Dense-matrix simulator for a driven, lossy qubit–cavity (Rabi-model-like) system.
+
+This module defines a `system` class that:
+- builds the composite Hilbert space (qubit ⊗ cavity),
+- constructs Hamiltonian and dissipator operators,
+- integrates a Lindblad master equation using SciPy ODE solvers,
+- provides a few convenience diagnostics (expectation values, Wigner/Q functions).
+
+Important dependency note
+-------------------------
+Some methods call helper functions `partial_trace` and `q_function`, but they are
+*not imported in this file*. In the original project layout these helpers typically
+live in a companion module (e.g. `functions.py`) and must be imported into this
+module's namespace (or injected) before calling those methods.
+
+Conventions
+-----------
+- All frequencies are treated as angular frequencies (rad/time). The time unit is
+  whatever is consistent with your chosen parameters (e.g. nanoseconds if ω is in rad/ns).
+- Operators and states are stored as dense NumPy arrays; performance is best for
+  modest truncation dimensions.
+"""
+
 import numpy as np
 from scipy.integrate import complex_ode, ode, quad
 from scipy.linalg import expm
@@ -6,6 +33,9 @@ from time import time
 from math import factorial
 from scipy.linalg import expm
 
+# ---------------------------------------------------------------------------
+# Basic constants / small helpers (mostly unused in the current solver)
+# ---------------------------------------------------------------------------
 hbar = 1.05457162e-34
 pi = np.pi
 ide = np.identity(2)
@@ -15,7 +45,58 @@ sig_z = np.array([[1.,0.],[0.,-1.]])
 
 class system(object):
 
+	"""Composite qubit–cavity system with Lindblad master-equation time evolution."""
+
 	def __init__( self, w01=-1.0, w=1.0, g=0.1, wd= 0, gamma=0, Ad=0.0, cavity_dim=3, qubit_dim=2, tint = 10, dvice='TRSM1',atol=1e-8,rtol=1e-6, max_step=1e-2,qb_ini=[0], dim_exp=20,  coupling_type='00', verbose=True ):
+		"""Create a driven-dissipative qubit–cavity system and precompute operators.
+		
+		Parameters (most important)
+		--------------------------
+		w01 : float
+		    Qubit |0>→|1> transition angular frequency (rad/time). Used when dvice=='QUBIT'
+		    or as a fallback if device parameters are not loaded from file.
+		w : float
+		    Cavity angular frequency ω_c (rad/time).
+		g : float
+		    Qubit–cavity coupling strength (rad/time). Interpretation depends on coupling_type.
+		wd : float
+		    Drive angular frequency ω_d (rad/time). Used in the time-dependent drive term.
+		gamma : float
+		    Cavity energy decay rate κ (rad/time) for the Lindblad dissipator with collapse operator `a`.
+		Ad : float
+		    Drive amplitude (rad/time) multiplying the chosen cavity quadrature operator `H_drive`.
+		cavity_dim, qubit_dim : int
+		    Hilbert-space truncation sizes for cavity and qubit degrees of freedom.
+		coupling_type : str
+		    Selects how to build the qubit Hamiltonian and coupling operator:
+		      - '00': simple Rabi-like coupling g (a+a†)(b+b†) with a toy qubit Hamiltonian
+		      - '11', '01', '10': variants using device-specific level structure and coupling operators
+		dvice : str
+		    Device model selector. For 'TRSM*' / 'QUTR*', this code loads precomputed transmon
+		    parameters from text files on disk (see paths below).
+		
+		Physics model
+		-------------
+		The density matrix ρ evolves according to a (time-local) Lindblad master equation:
+		
+		    dρ/dt = -i [H, ρ]
+		            -i Ad sin(ω_d t) [H_drive, ρ]
+		            + γ ( a ρ a† - 1/2 {a†a, ρ} )
+		
+		where:
+		- H = H_qb + H_cav + H_coupling is time-independent.
+		- H_drive is a cavity quadrature operator (here chosen as i(a - a†), i.e. proportional to P).
+		- The dissipator models single-photon loss from the cavity.
+		
+		Implementation notes
+		--------------------
+		- Basis ordering is **qubit ⊗ cavity** (qubit index varies slowest). In matrix indexing,
+		  the composite basis state |q, n> corresponds to linear index q*cavity_dim + n.
+		- Operators are stored as dense NumPy arrays; this is fine for moderate truncations but
+		  scales as O((Nq*Nc)^2) memory and O((Nq*Nc)^3) for dense linear algebra.
+		- The solver uses SciPy's `complex_ode` with explicit RK (dopri5). For strong dissipation
+		  or large Hilbert spaces, a stiff solver or sparse representation may be preferable.
+		"""
 
 		self.w = w
 		self.g = g
@@ -29,11 +110,10 @@ class system(object):
 		self.rtol = rtol
 		self.max_step = max_step
 		self.coupling_type = coupling_type
-
 		self.qubit_dim = qubit_dim
 		self.cavity_dim = cavity_dim
+		# Total Hilbert-space dimension D = Nq * Nc
 		self.sys_dim = qubit_dim*cavity_dim
-		self.dim_exp=dim_exp
 
 		self.initial_qb_state = np.zeros( qubit_dim, dtype='complex128' )
 		self.initial_cavity_state = np.zeros( cavity_dim, dtype='complex128' )
@@ -72,8 +152,10 @@ class system(object):
 
 		self.na_red = (a_temp.T).dot( a_temp )
 
+		# Cavity annihilation operator a acts on the cavity factor: I_qb ⊗ a_cav
 		self.a = np.kron( self.ide_qb, a_temp )
 		self.a_dag = np.transpose( self.a )
+		# Qubit lowering operator b acts on the qubit factor: b_qb ⊗ I_cav
 		self.b = np.kron( b_temp, self.ide_cav )
 		self.b_dag = np.transpose( self.b )
 		self.na = self.a_dag.dot( self.a )
@@ -122,7 +204,8 @@ class system(object):
 		#== cavity and drive Hamiltonian
 		#===========================
 		self.H_cav = self.w*self.na
-		self.H_drive = self.a + self.a_dag
+		#self.H_drive = self.a + self.a_dag
+		self.H_drive = 1j*(self.a - self.a_dag)
 
 		#===========================
 		#== qubit and coupling Hamiltonian
@@ -163,33 +246,45 @@ class system(object):
 
 		if verbose:
 			print("===============================================" )
-			print("Nq, Nc  = {:d}, {:d}".format( self.qubit_dim, self.cavity_dim ) )
-			print("w01, wc, wd  = {:7.4f}, {:7.4f}, {:7.4f} "\
+			print("Nq, Nc = {:d}, {:d}".format( self.qubit_dim, self.cavity_dim ) )
+			print("w01, wc, wd = {:7.4f}, {:7.4f}, {:7.4f} "\
 					.format( self.w01/(2.0*np.pi),self.w/(2.0*np.pi),self.wd/(2.0*np.pi) ) )
-			print("Ad  = {:7.4f} ".format( self.Ad/(2.0*np.pi) ) )
-			print("ah  = {:7.4f} ".format( self.anh/(2.0*np.pi) ) )
-			print("g  = {:7.4f} ".format( g/(2.0*np.pi) ) )
-			print("kappa  = {:7.4f} ".format( self.gamma/(2.0*np.pi) ) )
-			print("atol  = {:.1e} ".format( self.atol ) )
-			print("rtol  = {:.1e} ".format( self.rtol ) )
-			print("max_step  = {:.0e} ".format( self.max_step ) )
-			print("couling_type  = {:} ".format( self.coupling_type ) )
-			print("device  = {:} ".format( self.dvice ) )
+			print("Ad = {:7.4f} ".format( self.Ad/(2.0*np.pi) ) )
+			print("ah = {:7.4f} ".format( self.anh/(2.0*np.pi) ) )
+			print("g = {:7.4f} ".format( g/(2.0*np.pi) ) )
+			print("kappa = {:7.4f} ".format( self.gamma/(2.0*np.pi) ) )
+			print("atol = {:.1e} ".format( self.atol ) )
+			print("rtol = {:.1e} ".format( self.rtol ) )
+			print("max_step = {:.0e} ".format( self.max_step ) )
+			print("couling_type = {:} ".format( self.coupling_type ) )
+			print("device = {:} ".format( self.dvice ) )
 			print("===============================================" )
 
 	def expect( self, op ):
+		"""Return expectation value Tr[op ρ] for the current state."""
 
 		return np.trace( op.dot(self.rho) )
 
 	def renyi_entropy( self ):
+		"""Convenience: 1 - Tr[ρ²] (linear/Rényi-2 entropy proxy)."""
 
 		return 1.0 - np.trace( self.rho.dot(self.rho) )
 
 	def renyi_entropy_2( self, rho_in ):
+		"""Same as renyi_entropy but for an explicit density matrix argument."""
 
 		return 1.0 - np.trace( rho_in.dot(rho_in) )
 
 	def set_initial_qb_state( self, qb_state ):
+		"""Set the initial qubit state as a superposition of computational levels.
+		
+		`qb_state` is a list of level indices. For example:
+		- [0] prepares |0>
+		- [1] prepares |1>
+		- [0,1] prepares (|0> + |1>)/sqrt(2)
+		
+		The cavity state is not modified here.
+		"""
 
 		self.initial_qb_state[ : ] = 0.0
 
@@ -202,7 +297,15 @@ class system(object):
 		norm = np.sum( np.abs(self.initial_qb_state)**2 )
 		self.initial_qb_state /= np.sqrt(norm)
 
-	def set_initial_qb_cav_dm( self, qb_state ):
+	def set_initial_qb_cav_dressed_state_density_matrix( self, qb_state ):
+		"""Initialize ρ to a *dressed* eigenstate superposition.
+		
+		The state is constructed from eigenvectors of the full Hamiltonian H (computed in __init__):
+		    |ψ> = sum_{k in qb_state} |eig_k>
+		then ρ = |ψ><ψ|.
+		
+		This is useful for working in the interacting (dressed) basis rather than the bare basis.
+		"""
 
 		qb_cav_state = np.zeros( self.sys_dim )
 
@@ -219,12 +322,16 @@ class system(object):
 		self.rho_ini = np.outer( qb_cav_state, np.conj(qb_cav_state) )
 		self.rho = np.outer( qb_cav_state, np.conj(qb_cav_state) )
 
+		print('-- state installed in: ', np.round( self.eig_vec[:, qubit_level ], 6 ) )
+
 	def set_initial_photon_state( self, n ):
+		"""Set the cavity to a Fock state |n> (qubit left unchanged)."""
 
 		self.initial_cavity_state[:] = 0.0
 		self.initial_cavity_state[n] = 1.0
 
 	def set_initial_cs_state( self, alpha ):
+		"""Set the cavity to a coherent state |α> (truncated to cavity_dim)."""
 
 		from decimal import Decimal
 		from math import factorial
@@ -234,6 +341,7 @@ class system(object):
 			self.initial_cavity_state[n] = np.exp( -np.abs(alpha)**2/2 ) * alpha**n / denom
 
 	def initialise_density_matrix( self ):
+		"""Build the full initial density matrix ρ = ρ_qubit ⊗ ρ_cavity from the stored kets."""
 
 		qubit_rho0 = np.outer( self.initial_qb_state, np.conj(self.initial_qb_state) )
 		cavity_rho0 = np.outer( self.initial_cavity_state, np.conj(self.initial_cavity_state) )
@@ -241,17 +349,30 @@ class system(object):
 		self.rho = np.kron( qubit_rho0, cavity_rho0 )
 
 	def calc_fidelity( self, rho ):
+		"""Compute fidelity with the initial qubit state after tracing out the cavity.
+		
+		This measures F = <ψ_qb| Tr_cav(ρ) |ψ_qb> using the currently configured `initial_qb_state`.
+		"""
 
 		partial_rho = partial_trace( rho, [self.qubit_dim,self.cavity_dim], [0] )
 
 		return np.real( np.conj((self.initial_qb_state.T)).dot( partial_rho ).dot( self.initial_qb_state ) )
 
 	def ode_RHS( self, t, dm_1D ):
+		"""Right-hand side of the master equation for SciPy's ODE integrator.
+		
+		The integrator state is a flattened 1D vector containing the density matrix entries.
+		We reshape it, compute the Lindblad RHS, then flatten again.
+		"""
 
 		dm = dm_1D.reshape( self.sys_dim, self.sys_dim )
 
+		# Coherent (Hamiltonian) part: -i[H, ρ]
 		unitary = - 1j * ( self.H.dot(dm) - dm.dot(self.H) )
-		drive = - 1j * ( self.H_drive.dot(dm) - dm.dot(self.H_drive) ) * self.Ad * np.cos( self.wd*t )
+		#drive = - 1j * ( self.H_drive.dot(dm) - dm.dot(self.H_drive) ) * self.Ad * np.cos( self.wd*t )
+		# Time-dependent cavity drive: -i Ad sin(ω_d t) [H_drive, ρ]
+		drive = - 1j * ( self.H_drive.dot(dm) - dm.dot(self.H_drive) ) * self.Ad * np.sin( self.wd*t )
+		# Lindblad cavity decay (single-photon loss) with rate γ and collapse op a
 		decay = self.gamma * ( self.a.dot(dm).dot(self.a_dag) \
 				-0.5*( self.na.dot(dm) + dm.dot(self.na) ) ) 
 
@@ -261,6 +382,20 @@ class system(object):
 		return dm_result
 
 	def time_evolve( self, times, verbose=True ):
+		"""Integrate the master equation over an array of time points.
+		
+		Parameters
+		----------
+		times : 1D array
+		    Monotonically increasing time grid.
+		verbose : bool
+		    If True, prints progress updates with rough CPU time.
+		
+		Returns
+		-------
+		rhos_out : list[np.ndarray]
+		    List of density matrices ρ(t_i) with shape (sys_dim, sys_dim).
+		"""
 
 		t_int = times[1]-times[0]
 
@@ -268,7 +403,9 @@ class system(object):
 		last_print_t = -1e10
 		last_cpu_t = time()
 
+		# ODE integrator over the flattened density matrix (complex-valued).
 		dm_integrator = complex_ode( self.ode_RHS )
+		# Use explicit Runge–Kutta (dopri5). Parameters control accuracy and step size.
 		dm_integrator.set_integrator('dopri5', atol=self.atol, rtol=self.rtol, method='adams',nsteps=t_int*1e5, max_step=self.max_step)
 		#dm_integrator = ode( self.ode_RHS )
 		#dm_integrator.set_integrator('zvode', atol=self.atol, rtol=self.rtol, method='adams',nsteps=t_int*1e5, order=self.order )
@@ -302,6 +439,7 @@ class system(object):
 		return rhos_out
 
 	def my_wigner(self, re_lambda_list, im_lambda_list):
+		"""Compute cavity Wigner function of the *final* state (requires QuTiP)."""
 
 		from qutip import displace
 		cav_rho = partial_trace(self.rho, [self.qubit_dim, self.cavity_dim], 1, optimize=False)
@@ -331,11 +469,13 @@ class system(object):
 		return wigner
 
 	def paramchar(self, tmax):
+		"""Build a human-readable parameter string used to name output files."""
 
-		return ('tmax{:4d}_Nq{:2d}_Nc{:2d}_amp{:7.4f}_kappa{:7.4f}_wq{:7.4f}_anh{:7.4f}_wc{:7.4f}_g{:7.4f}_wd{:7.4f}_ms{:.0e}_dimexp{:}_qb'+str(self.qb_ini)+'_{:}_'+self.dvice)\
-				.format( int(tmax), self.qubit_dim, self.cavity_dim, self.Ad/(2.0*pi), self.gamma/(2.0*pi), self.w01/(2.0*pi), self.anh/(2.0*pi),self.w/(2.0*pi), self.g/(2.0*pi), self.wd/(2.0*pi), self.max_step, self.dim_exp, self.coupling_type ).replace(" ","")
+		return ('tmax{:4d}_Nq{:2d}_Nc{:2d}_amp{:7.4f}_kappa{:7.4f}_wq{:7.4f}_anh{:7.4f}_wc{:7.4f}_g{:7.4f}_wd{:7.4f}_ms{:.0e}_qb'+str(self.qb_ini)+'_{:}_'+self.dvice)\
+				.format( int(tmax), self.qubit_dim, self.cavity_dim, self.Ad/(2.0*pi), self.gamma/(2.0*pi), self.w01/(2.0*pi), self.anh/(2.0*pi),self.w/(2.0*pi), self.g/(2.0*pi), self.wd/(2.0*pi), self.max_step, self.coupling_type ).replace(" ","")
 
 	def save_and_plot(self, times, rhos, lvl_plot=[1], max_lambda=7 ):
+		"""(Partially implemented) Save diagnostic arrays and produce basic plots."""
 
 		import matplotlib.pyplot as plt
 		from matplotlib.colors import LinearSegmentedColormap
@@ -410,6 +550,7 @@ class system(object):
 		#plt.close()
 
 	def save_husimi_for_gif(self, times, rhos, max_lambda, frame_nb, log ):
+		"""Generate and save a sequence of Husimi-Q frames for GIF/video rendering."""
 
 		import matplotlib.pyplot as plt
 		from matplotlib.colors import LinearSegmentedColormap
@@ -444,6 +585,7 @@ class system(object):
 			ax2.set_ylabel('PHOTON NUMBER')
 			ax2.scatter( n_arr[i,0], n_arr[i,1], s=20, color='red'  )
 
+			# Rotate cavity frame at ω_d to produce a phase-space distribution in the rotating frame.
 			rho_rot = expm( 1j*self.wd*self.na*times[ind] ).dot( rhos[ind].dot( expm( -1j*self.wd*self.na*times[ind] ) ) )
 			rho_rot_cav = partial_trace( rho_rot, [self.qubit_dim,self.cavity_dim], [1] )
 
@@ -482,6 +624,7 @@ class system(object):
 			plt.close()
 
 	def photon_distribution( self, rho_in ):
+		"""Return bare-basis populations P(q, n) = <q,n|ρ|q,n| for a given density matrix."""
 
 		out = np.zeros( (self.qubit_dim, self.cavity_dim) )
 
