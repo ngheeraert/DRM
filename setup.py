@@ -5,7 +5,7 @@ def readme():
         return f.read()
 
 setup(name='medrm',
-      version='0.1',
+      version='1.1',
       description='This program simulates the driven rabi model using master equation integration.',
       long_description=readme(),
       author='Nicolas Gheeraert',
