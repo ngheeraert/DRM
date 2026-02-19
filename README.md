@@ -28,10 +28,10 @@ parameters, evolve `ρ(t)`, then post-process observables and save outputs.
 
 The code integrates a density matrix `ρ(t)` using the RHS implemented in `system.ode_RHS()`:
 
-\[
-\dot\rho = -i[H,\rho] \,\;\; -i\, A_d\sin(\omega_d t)\,[H_{drive},\rho]
-\; + \; \gamma\left(a\rho a^\dagger - \tfrac{1}{2}\{a^\dagger a,\rho\}\right).
-\]
+<img
+  src="https://latex.codecogs.com/svg.image?\dot{\rho}=-i[H,\rho]\; -i\,A_d\sin(\omega_d t)\,[H_{drive},\rho]\;+\;\gamma\left(a\rho a^\dagger-\tfrac{1}{2}\{a^\dagger a,\rho\}\right)."
+  alt="\dot{\rho} = -i[H,\rho] - i A_d \sin(\omega_d t) [H_{drive},\rho] + \gamma(a\rho a^\dagger - \tfrac12\{a^\dagger a,\rho\})"
+/>
 
 - `H = H_qb + H_cav + H_coupling`
 - drive term uses `H_drive = i(a - a†)` (a cavity quadrature) and a sinusoidal modulation
